@@ -7603,63 +7603,161 @@ local function startLockY()
         end
     end)
 end
-
 -- ==========================================
--- ฟังก์ชันสลับการ วาร์ปลงใต้ดิน / กลับขึ้นบนพื้น
+-- 🟢 ระบบ Snap Under Map + UI สถานะมุมซ้ายบน (ปลอดภัย ไม่โดน Noclip ดึง)
 -- ==========================================
-local function toggleSnap()
-    if not hrp then return end
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
-    if not isSnapped then
-        -- --------------------------------------
-        -- [เคสที่ 1] กดเปิดใช้งาน -> ดิ่งลงใต้ดิน
-        -- --------------------------------------
-        isSnapped = true
-        
-        -- 1. บันทึกความสูงปัจจุบันบนพื้นดินไว้ก่อน
-        originalY = hrp.Position.Y 
-        
-        -- 2. คำนวณความสูงใหม่ใต้ดิน
-        lockedY = originalY - snapDepth
-        
-        -- 3. วาร์ปตัวละครลงไปใต้ดิน
-        local currentPos = hrp.Position
-        hrp.CFrame = CFrame.new(currentPos.X, lockedY, currentPos.Z)
-        
-        -- 4. เริ่มทำการล็อคตำแหน่งแกน Y
-        startLockY()
-        
-    else
-        -- --------------------------------------
-        -- [เคสที่ 2] กดปิดใช้งาน -> วาร์ปกลับขึ้นบนพื้น
-        -- --------------------------------------
-        isSnapped = false
-        
-        -- 1. หยุดการล็อคแกน Y
-        stopLockY()
-        
-        -- 2. วาร์ปกลับขึ้นมาที่ระดับความสูงบนพื้นดินเดิม (คงตำแหน่ง X, Z ล่าสุดที่เดินไปไว้)
-        if originalY then
-            local currentPos = hrp.Position
-            hrp.CFrame = CFrame.new(currentPos.X, originalY, currentPos.Z)
-        end
-        
-        -- รีเซ็ตค่าบันทึกความสูง
-        originalY = nil
-        lockedY = nil
+local player = Players.LocalPlayer
+local guiParent = player:WaitForChild("PlayerGui")
+
+if guiParent:FindFirstChild("SnapStatusUI") then
+    guiParent.SnapStatusUI:Destroy()
+end
+
+local snapScreen = Instance.new("ScreenGui")
+snapScreen.Name = "SnapStatusUI"
+snapScreen.ResetOnSpawn = false
+snapScreen.Parent = guiParent
+
+local snapLabel = Instance.new("TextLabel")
+snapLabel.Parent = snapScreen
+snapLabel.Position = UDim2.new(0, 15, 0, 15)
+snapLabel.Size = UDim2.new(0, 120, 0, 40)
+snapLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+snapLabel.TextColor3 = Color3.fromRGB(255, 50, 50)
+snapLabel.TextScaled = true
+snapLabel.Font = Enum.Font.GothamBold
+snapLabel.Text = "Snap: OFF"
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 8)
+corner.Parent = snapLabel
+
+local uiStroke = Instance.new("UIStroke")
+uiStroke.Color = Color3.fromRGB(255, 255, 255)
+uiStroke.Thickness = 1.5
+uiStroke.Parent = snapLabel
+
+local isSnapped = false
+local snapDepth = 15
+local originalY = nil
+local lockedY = nil
+local heartbeatConnection = nil
+
+local function stopLockY()
+    if heartbeatConnection then
+        heartbeatConnection:Disconnect()
+        heartbeatConnection = nil
     end
 end
 
--- ==========================================
--- การตรวจจับการกดปุ่ม (Keybind: ปุ่ม Z)
--- ==========================================
+local function startLockY()
+    stopLockY()
+    heartbeatConnection = RunService.Heartbeat:Connect(function()
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if isSnapped and lockedY and hrp then
+            if math.abs(hrp.Position.Y - lockedY) > 0.5 then
+                hrp.CFrame = CFrame.new(hrp.Position.X, lockedY, hrp.Position.Z)
+                hrp.Velocity = Vector3.new(0, 0, 0)
+            end
+        end
+    end)
+end
+
+local function toggleSnap()
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    if not isSnapped then
+        isSnapped = true
+        originalY = hrp.Position.Y
+        lockedY = originalY - snapDepth
+        
+        hrp.CFrame = CFrame.new(hrp.Position.X, lockedY, hrp.Position.Z)
+        startLockY()
+        
+        snapLabel.Text = "Snap: ON"
+        snapLabel.TextColor3 = Color3.fromRGB(50, 255, 50)
+    else
+        isSnapped = false
+        stopLockY()
+        
+        if originalY then
+            hrp.CFrame = CFrame.new(hrp.Position.X, originalY + 3, hrp.Position.Z)
+        end
+        originalY = nil
+        lockedY = nil
+        
+        snapLabel.Text = "Snap: OFF"
+        snapLabel.TextColor3 = Color3.fromRGB(255, 50, 50)
+    end
+end
+
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end -- ป้องกันทำงานตอนพิมพ์แชท
-    
+    if gameProcessed then return end
     if input.KeyCode == Enum.KeyCode.Z then
         toggleSnap()
     end
 end)
+
+-- ==========================================
+-- 🎯 Silent Aim คมพิเศษ (คำนวณความเร็ว + ดักหลบ ไม่ใช้ Hitbox หลอก)
+-- ==========================================
+task.spawn(function()
+    RunService.RenderStepped:Connect(function()
+        if F then -- ทำงานเมื่อเปิด Silent Aim
+            local bestTarget = nil
+            local minDistance = H or 120
+            local viewportCenter = Vector2.new(y.ViewportSize.X / 2, y.ViewportSize.Y / 2)
+            local localHead = r.Character and r.Character:FindFirstChild("Head")
+
+            for _, targetPlayer in ipairs(Players:GetPlayers()) do
+                if targetPlayer ~= player and targetPlayer.Character then
+                    local char = targetPlayer.Character
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    local head = char:FindFirstChild("Head")
+                    local hrp = char:FindFirstChild("HumanoidRootPart")
+
+                    -- เช็กว่ามีชีวิตอยู่และไม่ใช่เพื่อนในรายการยกเว้น
+                    if hum and hum.Health > 0 and head and hrp and not isPlayerExcluded(targetPlayer.Name) then
+                        local screenPos, onScreen = y:WorldToViewportPoint(head.Position)
+
+                        if onScreen then
+                            local distFromCenter = (Vector2.new(screenPos.X, screenPos.Y) - viewportCenter).Magnitude
+                            
+                            -- เช็กว่าอยู่ในวงกลม FOV
+                            if distFromCenter <= minDistance then
+                                local isBlocked = false
+                                if localHead then
+                                    isBlocked = isBehindWall(localHead.Position, head.Position)
+                                end
+
+                                -- ถ้าไม่ติดกำแพง ให้เลือกเป้าหมายที่อยู่ใกล้ศูนย์กลางจอที่สุด
+                                if not isBlocked then
+                                    minDistance = distFromCenter
+                                    bestTarget = targetPlayer
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+
+            -- ส่งเป้าหมายที่คำนวณได้ไปยังระบบยิงหลัก
+            if bestTarget then
+                I = bestTarget
+            end
+        end
+    end)
+end)
+
+print("[RO89 Hub] Safe & Sharp Silent Aim + Snap UI Loaded!")
+
 -- ==========================================
 -- ระบบ Fly Jump (กดกระโดดค้างเพื่อลอยตัว)
 -- ==========================================
