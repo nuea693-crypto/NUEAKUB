@@ -7604,7 +7604,7 @@ local function startLockY()
     end)
 end
 -- ==========================================
--- 🟢 ระบบ Snap Under Map + UI สถานะมุมซ้ายบน (ปลอดภัย ไม่โดน Noclip ดึง)
+-- 🟢 ระบบ Snap Under Map (แก้ไขให้มุดลงและกลับขึ้นมาได้จริง 100%)
 -- ==========================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -7613,6 +7613,7 @@ local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 local guiParent = player:WaitForChild("PlayerGui")
 
+-- สร้างหรือรีเซ็ต UI สถานะมุมซ้ายบน
 if guiParent:FindFirstChild("SnapStatusUI") then
     guiParent.SnapStatusUI:Destroy()
 end
@@ -7625,9 +7626,9 @@ snapScreen.Parent = guiParent
 local snapLabel = Instance.new("TextLabel")
 snapLabel.Parent = snapScreen
 snapLabel.Position = UDim2.new(0, 15, 0, 15)
-snapLabel.Size = UDim2.new(0, 120, 0, 40)
+snapLabel.Size = UDim2.new(0, 130, 0, 45)
 snapLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-snapLabel.TextColor3 = Color3.fromRGB(255, 50, 50)
+snapLabel.TextColor3 = Color3.fromRGB(255, 50, 50) -- สีแดง (ปิด)
 snapLabel.TextScaled = true
 snapLabel.Font = Enum.Font.GothamBold
 snapLabel.Text = "Snap: OFF"
@@ -7642,62 +7643,76 @@ uiStroke.Thickness = 1.5
 uiStroke.Parent = snapLabel
 
 local isSnapped = false
-local snapDepth = 15
-local originalY = nil
-local lockedY = nil
+local snapDepth = 12 -- ความลึกในการมุด (ปรับลดลงนิดหน่อยกันตกแมพตาย)
+local originalCFrame = nil
 local heartbeatConnection = nil
 
-local function stopLockY()
+local function stopLock()
     if heartbeatConnection then
         heartbeatConnection:Disconnect()
         heartbeatConnection = nil
     end
 end
 
-local function startLockY()
-    stopLockY()
-    heartbeatConnection = RunService.Heartbeat:Connect(function()
-        local char = player.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if isSnapped and lockedY and hrp then
-            if math.abs(hrp.Position.Y - lockedY) > 0.5 then
-                hrp.CFrame = CFrame.new(hrp.Position.X, lockedY, hrp.Position.Z)
-                hrp.Velocity = Vector3.new(0, 0, 0)
-            end
-        end
-    end)
-end
-
 local function toggleSnap()
     local char = player.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
+    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not humanoid then return end
 
     if not isSnapped then
+        -- กำลังจะมุดลง
         isSnapped = true
-        originalY = hrp.Position.Y
-        lockedY = originalY - snapDepth
+        originalCFrame = hrp.CFrame -- บันทึกตำแหน่งเดิมก่อนมุดแบบละเอียด (ทั้งตำแหน่งและมุมมอง)
         
-        hrp.CFrame = CFrame.new(hrp.Position.X, lockedY, hrp.Position.Z)
-        startLockY()
+        -- ล็อคตำแหน่งลงไปข้างล่าง
+        local targetPos = originalCFrame - Vector3.new(0, snapDepth, 0)
+        hrp.CFrame = targetPos
+        
+        -- ปิดการชนชั่วคราวเพื่อให้มุดผ่านพื้นได้ไม่ติดขัด
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+        
+        -- ลูปบังคับตำแหน่งไม่ให้เด้งกลับ
+        stopLock()
+        heartbeatConnection = RunService.Heartbeat:Connect(function()
+            if isSnapped and hrp then
+                local currentLook = hrp.CFrame - hrp.Position
+                hrp.CFrame = CFrame.new(targetPos.Position) * currentLook
+                hrp.Velocity = Vector3.new(0, 0, 0)
+                hrp.RotVelocity = Vector3.new(0, 0, 0)
+            end
+        end)
         
         snapLabel.Text = "Snap: ON"
-        snapLabel.TextColor3 = Color3.fromRGB(50, 255, 50)
+        snapLabel.TextColor3 = Color3.fromRGB(50, 255, 50) -- สีเขียว (เปิด)
     else
+        -- กำลังจะกลับขึ้นมา
         isSnapped = false
-        stopLockY()
+        stopLock()
         
-        if originalY then
-            hrp.CFrame = CFrame.new(hrp.Position.X, originalY + 3, hrp.Position.Z)
+        -- คืนค่าการชนให้ตัวละคร
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = true
+            end
         end
-        originalY = nil
-        lockedY = nil
+        
+        -- ดีดตัวกลับขึ้นตำแหน่งเดิม + ลอยขึ้นเหนือพื้นเล็กน้อยกันติดบัคพื้น
+        if originalCFrame then
+            hrp.CFrame = originalCFrame + Vector3.new(0, 3, 0)
+        end
+        originalCFrame = nil
         
         snapLabel.Text = "Snap: OFF"
-        snapLabel.TextColor3 = Color3.fromRGB(255, 50, 50)
+        snapLabel.TextColor3 = Color3.fromRGB(255, 50, 50) -- สีแดง (ปิด)
     end
 end
 
+-- กดปุ่ม Z เพื่อใช้งาน
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     if input.KeyCode == Enum.KeyCode.Z then
